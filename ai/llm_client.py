@@ -17,7 +17,7 @@ from ai.prompts import (
 logger = logging.getLogger(__name__)
 
 _client = genai.Client(api_key=GEMINI_API_KEY)
-_MODEL = "gemini-3.1-flash-lite-preview-05-20"
+_MODEL = "gemini-2.5-flash"
 
 _MAX_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 30
