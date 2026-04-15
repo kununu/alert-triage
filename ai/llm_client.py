@@ -65,6 +65,64 @@ def _generate(prompt: str) -> str:
                 raise
 
 
+_VALID_INTENTS = {"triage", "investigate"}
+_VALID_TYPE_HINTS = {"APM", "SYNTHETIC", "SERVICE_LEVEL", None}
+_MAX_FIELD_LEN = 256
+
+
+def _validate_context(data: dict) -> dict:
+    """Validate and normalise the JSON returned by the LLM extraction prompt.
+
+    Raises ValueError with a descriptive message if a required field is missing
+    or has an unexpected type/value — preventing malformed LLM output from
+    propagating into downstream query or UI logic.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(f"Expected a JSON object, got {type(data).__name__}")
+
+    # service_name — required, must be a non-empty string within reasonable length
+    service_name = data.get("service_name")
+    if not isinstance(service_name, str) or not service_name.strip():
+        raise ValueError("Missing or empty 'service_name' in LLM response")
+    if len(service_name) > _MAX_FIELD_LEN:
+        raise ValueError(f"'service_name' exceeds max length ({_MAX_FIELD_LEN})")
+
+    # severity — optional, coerce to lowercase string or default
+    severity = data.get("severity", "unknown")
+    if not isinstance(severity, str):
+        severity = "unknown"
+    data["severity"] = severity.lower()[:32]
+
+    # summary — optional but must be a string if present
+    summary = data.get("summary", "")
+    if not isinstance(summary, str):
+        summary = ""
+    data["summary"] = summary[:1024]
+
+    # intent — must be one of the known values
+    intent = data.get("intent", "triage")
+    if intent not in _VALID_INTENTS:
+        intent = "triage"
+    data["intent"] = intent
+
+    # entity_type_hint — must be a known type or absent
+    type_hint = data.get("entity_type_hint")
+    if type_hint not in _VALID_TYPE_HINTS:
+        type_hint = None
+    data["entity_type_hint"] = type_hint
+
+    # time_start / time_end — optional; validate format if present
+    for field in ("time_start", "time_end"):
+        val = data.get(field)
+        if val is not None:
+            if not isinstance(val, str):
+                data[field] = None
+            elif len(val) > 32:
+                data[field] = None
+
+    return data
+
+
 def extract_service_context(alert_text: str) -> dict:
     """Parse raw alert text into structured service context (triage or investigation)."""
     raw = _generate(
@@ -74,7 +132,8 @@ def extract_service_context(alert_text: str) -> dict:
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw.strip())
+    data = json.loads(raw.strip())
+    return _validate_context(data)
 
 
 def synthesize_triage(service_name: str, severity: str, alert_summary: str, nr_data: dict) -> str:

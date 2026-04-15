@@ -10,4 +10,4 @@ MICROSOFT_APP_ID = os.environ.get("MicrosoftAppId", "")
 MICROSOFT_APP_PASSWORD = os.environ.get("MicrosoftAppPassword", "")
 MS_GRAPH_TENANT_ID = os.environ.get("MS_GRAPH_TENANT_ID", "")
 
-NR_NERDGRAPH_URL = "https://api.eu.newrelic.com/graphql"
+NR_NERDGRAPH_URL = os.environ.get("NR_NERDGRAPH_URL", "https://api.eu.newrelic.com/graphql")

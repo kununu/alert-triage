@@ -66,17 +66,35 @@ _CATEGORY_KIND_MAP = {
 }
 
 
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB — guard against runaway NR responses
+
+
 def _nerdgraph(query: str, variables: dict) -> dict:
     response = requests.post(
         NR_NERDGRAPH_URL,
         json={"query": query, "variables": variables},
         headers={"Api-Key": NR_API_KEY, "Content-Type": "application/json"},
         timeout=30,
+        stream=True,
     )
     response.raise_for_status()
-    payload = response.json()
-    if "errors" in payload:
-        raise RuntimeError(f"NerdGraph errors: {payload['errors']}")
+
+    # Enforce response size limit before buffering into memory
+    content_length = int(response.headers.get("Content-Length", 0))
+    if content_length > _MAX_RESPONSE_BYTES:
+        raise RuntimeError(
+            f"NerdGraph response too large ({content_length} bytes, limit {_MAX_RESPONSE_BYTES})"
+        )
+    body = response.content
+    if len(body) > _MAX_RESPONSE_BYTES:
+        raise RuntimeError(
+            f"NerdGraph response body too large ({len(body)} bytes, limit {_MAX_RESPONSE_BYTES})"
+        )
+
+    payload = json.loads(body)
+    errors = payload.get("errors")
+    if errors:
+        raise RuntimeError(f"NerdGraph errors: {errors}")
     return payload["data"]
 
 

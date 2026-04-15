@@ -11,11 +11,21 @@ from bot.teams_graph import get_thread_root_message
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on inbound message size — prevents LLM token exhaustion attacks.
+_MAX_INPUT_CHARS = 8_000
+
 
 class TriageActivityHandler(ActivityHandler):
     async def on_message_activity(self, turn_context: TurnContext):
         user_text = turn_context.activity.text or ""
         user_text = _strip_mention(user_text).strip()
+
+        # Reject oversized inputs before doing anything with them
+        if len(user_text) > _MAX_INPUT_CHARS:
+            await turn_context.send_activity(
+                "Message is too long — please keep it under 8,000 characters."
+            )
+            return
 
         await turn_context.send_activity(Activity(type=ActivityTypes.typing))
 
@@ -24,11 +34,9 @@ class TriageActivityHandler(ActivityHandler):
 
         if alert_context:
             logger.info(
-                "Thread mode: entity=%s, type_hint=%s, window=%s → %s",
-                alert_context["entity_name"],
+                "Thread mode: type_hint=%s, has_window=%s",
                 alert_context.get("entity_type_hint"),
-                alert_context.get("time_start"),
-                alert_context.get("time_end"),
+                bool(alert_context.get("time_start")),
             )
             await self._handle_thread_alert(turn_context, alert_context, user_text)
         else:
@@ -59,8 +67,8 @@ class TriageActivityHandler(ActivityHandler):
 
         if not root_message_id or not team_id or not teams_info:
             logger.debug(
-                "Thread detection: root_msg_id=%s, team_id=%s, channel=%s",
-                root_message_id, team_id, teams_info,
+                "Thread detection: root_msg_id=%s, has_team=%s, has_channel=%s",
+                bool(root_message_id), bool(team_id), bool(teams_info),
             )
             return None
 
@@ -95,17 +103,17 @@ class TriageActivityHandler(ActivityHandler):
             # User just tagged the bot → auto-triage
             await self._do_triage(
                 turn_context, entity_name, entity_type_hint,
-                summary=f"Alert: {entity_name}. {user_text}" if user_text else f"Alert fired for {entity_name}",
+                summary=f"Alert fired for {entity_name}",
             )
         elif time_start and time_end:
             await self._do_investigation(
                 turn_context, entity_name, entity_type_hint,
                 time_start, time_end,
-                summary=f"Investigating alert: {entity_name}. User context: {user_text}",
+                summary=f"Investigating alert: {entity_name}",
             )
         else:
             # No timestamps in alert card but user wants investigation
-            # Fall back to the direct message flow which uses Gemini for time extraction
+            # Fall back to the direct message flow which uses LLM for time extraction
             combined = f"{entity_name}\n{user_text}"
             await self._handle_direct_message(turn_context, combined)
 
@@ -130,8 +138,8 @@ class TriageActivityHandler(ActivityHandler):
             alert_summary = context.get("summary", alert_text[:200])
             entity_type_hint = context.get("entity_type_hint")
             logger.info(
-                "Extracted: intent=%s service=%s severity=%s type_hint=%s",
-                intent, service_name, severity, entity_type_hint,
+                "Extracted: intent=%s severity=%s type_hint=%s",
+                intent, severity, entity_type_hint,
             )
 
             if intent == "investigate":
@@ -153,10 +161,11 @@ class TriageActivityHandler(ActivityHandler):
                     summary=alert_summary, severity=severity,
                 )
 
-        except Exception as exc:
-            logger.exception("Triage failed")
+        except Exception:
+            logger.exception("Failed to handle direct message")
             await turn_context.send_activity(
-                f"Triage failed: {exc}\n\nPlease check the alert text and try again."
+                "Something went wrong while processing your request. "
+                "Please try again or check the bot logs."
             )
 
     # ── Triage & Investigation executors ───────────────────────
@@ -169,7 +178,6 @@ class TriageActivityHandler(ActivityHandler):
         """Run triage for a known entity."""
         try:
             nr_data = get_service_triage_data(service_name, entity_type_hint=entity_type_hint)
-            logger.info("NR triage data: %s", nr_data)
 
             if nr_data is None:
                 await turn_context.send_activity(
@@ -185,7 +193,6 @@ class TriageActivityHandler(ActivityHandler):
                 alert_summary=summary,
                 nr_data=nr_data,
             )
-            logger.info("Triage brief: %s", triage_brief)
 
             card = build_triage_card(
                 service_name=service_name,
@@ -205,9 +212,11 @@ class TriageActivityHandler(ActivityHandler):
                     }],
                 )
             )
-        except Exception as exc:
-            logger.exception("Triage failed for %s", service_name)
-            await turn_context.send_activity(f"Triage failed: {exc}")
+        except Exception:
+            logger.exception("Triage failed for entity (see logs for details)")
+            await turn_context.send_activity(
+                "Triage failed due to a temporary issue. Please try again."
+            )
 
     async def _do_investigation(
         self, turn_context: TurnContext,
@@ -217,7 +226,7 @@ class TriageActivityHandler(ActivityHandler):
         """Run investigation for a known entity + time window."""
         try:
             await turn_context.send_activity(
-                f"🔍 Investigating **{service_name}** between {time_start} and {time_end}… "
+                f"🔍 Investigating **{service_name}**… "
                 "This may take a moment while I query New Relic."
             )
 
@@ -225,7 +234,7 @@ class TriageActivityHandler(ActivityHandler):
                 service_name, time_start, time_end, entity_type_hint=entity_type_hint,
             )
             logger.info(
-                "Investigation data: entity_type=%s sli_kind=%s",
+                "Investigation complete: entity_type=%s sli_kind=%s",
                 investigation_data.get("entity_type") if investigation_data else None,
                 investigation_data.get("sli_kind") if investigation_data else None,
             )
@@ -244,7 +253,6 @@ class TriageActivityHandler(ActivityHandler):
                 time_end=time_end,
                 investigation_data=investigation_data,
             )
-            logger.info("Investigation analysis: %s", analysis[:200])
 
             nr_link = investigation_data.get("nr_link", "")
             header = (
@@ -260,9 +268,11 @@ class TriageActivityHandler(ActivityHandler):
                     text=header + analysis + (f"\n\n[Open in New Relic]({nr_link})" if nr_link else ""),
                 )
             )
-        except Exception as exc:
-            logger.exception("Investigation failed for %s", service_name)
-            await turn_context.send_activity(f"Investigation failed: {exc}")
+        except Exception:
+            logger.exception("Investigation failed for entity (see logs for details)")
+            await turn_context.send_activity(
+                "Investigation failed due to a temporary issue. Please try again."
+            )
 
 
 def _strip_mention(text: str) -> str:
