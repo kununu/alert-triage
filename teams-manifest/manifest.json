@@ -1,0 +1,77 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "{{MICROSOFT_APP_ID}}",
+  "developer": {
+    "name": "AlertTriage",
+    "websiteUrl": "https://github.com/your-org/alert-triage",
+    "privacyUrl": "https://github.com/your-org/alert-triage/privacy",
+    "termsOfUseUrl": "https://github.com/your-org/alert-triage/terms"
+  },
+  "name": {
+    "short": "AlertTriage",
+    "full": "AlertTriage - NR Alert Investigation Bot"
+  },
+  "description": {
+    "short": "Triage and investigate New Relic alerts directly in Teams",
+    "full": "AlertTriage is a bot that reads New Relic alert cards in your channels, queries live data from NerdGraph, and returns triage briefs or deep root cause investigations. Tag @AlertTriage in a thread under an alert to get started."
+  },
+  "icons": {
+    "color": "color.png",
+    "outline": "outline.png"
+  },
+  "accentColor": "#0078D4",
+  "bots": [
+    {
+      "botId": "{{MICROSOFT_APP_ID}}",
+      "scopes": ["team", "personal"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["team"],
+          "commands": [
+            {
+              "title": "triage",
+              "description": "Quick status check — tag me in an alert thread or type: triage <service name>"
+            },
+            {
+              "title": "investigate",
+              "description": "Deep root cause analysis — tag me in a thread or type: investigate <service name> - <time>"
+            }
+          ]
+        },
+        {
+          "scopes": ["personal"],
+          "commands": [
+            {
+              "title": "triage",
+              "description": "Quick status check for a service: triage <service name>"
+            },
+            {
+              "title": "investigate",
+              "description": "Deep investigation: investigate <service name> - failed at <time>"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "webApplicationInfo": {
+    "id": "{{MICROSOFT_APP_ID}}",
+    "resource": "https://RscBasedStoreApp"
+  },
+  "authorization": {
+    "permissions": {
+      "resourceSpecific": [
+        {
+          "name": "ChannelMessage.Read.Group",
+          "type": "Application"
+        }
+      ]
+    }
+  },
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": []
+}
