@@ -67,7 +67,7 @@ MS_GRAPH_TENANT_ID=   # Azure AD tenant ID (for Graph API thread fetching)
 
 **Thread-aware bot** — When @mentioned in a thread reply, the bot detects the thread via `;messageid=` in `conversation.id`, fetches the root alert card via Graph API (`teams_graph.py`), parses it with `alert_parser.py`, and runs triage or investigation automatically. Direct messages use the original Gemini-style extraction flow via the LLM.
 
-**LLM client** — `ai/llm_client.py` is the single integration point for Gemini. All prompts are in `ai/prompts.py`. The `_generate()` function handles retries on 429 (rate limit) and 529 (overload). 
+**LLM client** — `ai/llm_client.py` is the single integration point for Gemini, and provider SDK calls should not be made outside this module. All prompts are in `ai/prompts.py`. The `_generate()` function handles retries for Gemini `ServerError` responses and 429 `ClientError` rate limits.
 
 **RSC permissions** — The Teams manifest uses `ChannelMessage.Read.Group` (Resource-Specific Consent) instead of the tenant-wide `ChannelMessage.Read.All`. This limits the bot to reading messages only from teams where it is explicitly installed.
 
