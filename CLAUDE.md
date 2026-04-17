@@ -9,7 +9,7 @@ A Microsoft Teams bot that reads New Relic alert cards posted in channel threads
 ## Running tests
 
 ```bash
-ANTHROPIC_API_KEY=test NR_API_KEY=test NR_ACCOUNT_ID=test .venv/bin/pytest tests/ -v
+GEMINI_API_KEY=test NR_API_KEY=test NR_ACCOUNT_ID=test .venv/bin/pytest tests/ -v
 ```
 
 All 30 tests should pass. Tests use `unittest.mock.patch` to mock the LLM and New Relic calls — no real API keys needed.
@@ -18,7 +18,7 @@ All 30 tests should pass. Tests use `unittest.mock.patch` to mock the LLM and Ne
 
 ```
 ai/
-  llm_client.py       # Anthropic Claude wrapper — _generate(), extract_service_context(),
+  llm_client.py       # Gemini wrapper — _generate(), extract_service_context(),
                       # synthesize_triage(), synthesize_investigation()
   prompts.py          # All LLM prompt templates (extraction, triage, investigation)
 
@@ -37,7 +37,7 @@ newrelic/
                       # nrql_trace_id(), entity_search_string()
 
 config/
-  settings.py         # Loads env vars — NR_API_KEY, NR_ACCOUNT_ID, ANTHROPIC_API_KEY,
+  settings.py         # Loads env vars — NR_API_KEY, NR_ACCOUNT_ID, GEMINI_API_KEY,
                       # MicrosoftAppId, MicrosoftAppPassword, MS_GRAPH_TENANT_ID
 
 teams-manifest/
@@ -51,7 +51,7 @@ Copy `.env.example` to `.env` and fill in:
 ```
 NR_API_KEY=           # New Relic user API key (EU account)
 NR_ACCOUNT_ID=        # New Relic account ID
-ANTHROPIC_API_KEY=    # Anthropic enterprise API key
+GEMINI_API_KEY=       # Gemini free API key
 MicrosoftAppId=       # Azure AD bot app registration ID
 MicrosoftAppPassword= # Azure AD bot client secret
 MS_GRAPH_TENANT_ID=   # Azure AD tenant ID (for Graph API thread fetching)
@@ -67,7 +67,7 @@ MS_GRAPH_TENANT_ID=   # Azure AD tenant ID (for Graph API thread fetching)
 
 **Thread-aware bot** — When @mentioned in a thread reply, the bot detects the thread via `;messageid=` in `conversation.id`, fetches the root alert card via Graph API (`teams_graph.py`), parses it with `alert_parser.py`, and runs triage or investigation automatically. Direct messages use the original Gemini-style extraction flow via the LLM.
 
-**LLM client** — `ai/llm_client.py` is the single integration point for Claude. All prompts are in `ai/prompts.py`. The `_generate()` function handles retries on 429 (rate limit) and 529 (overload). Never call the Anthropic SDK directly from outside this module.
+**LLM client** — `ai/llm_client.py` is the single integration point for Gemini. All prompts are in `ai/prompts.py`. The `_generate()` function handles retries on 429 (rate limit) and 529 (overload). 
 
 **RSC permissions** — The Teams manifest uses `ChannelMessage.Read.Group` (Resource-Specific Consent) instead of the tenant-wide `ChannelMessage.Read.All`. This limits the bot to reading messages only from teams where it is explicitly installed.
 
@@ -82,4 +82,4 @@ MS_GRAPH_TENANT_ID=   # Azure AD tenant ID (for Graph API thread fetching)
 
 ## Code review policy
 
-All changes to `ai/`, `bot/`, `newrelic/`, and `config/` require at least one approved PR review before merging to `main`. The bot operates with privileged credentials (New Relic API key, Microsoft Graph token, Anthropic API key).
+All changes to `ai/`, `bot/`, `newrelic/`, and `config/` require at least one approved PR review before merging to `main`. The bot operates with privileged credentials (New Relic API key, Microsoft Graph token, Gemini API key).
