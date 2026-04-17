@@ -34,7 +34,7 @@ When a New Relic alert fires into your Teams channel, tag `@AlertTriage` in the 
 
 - Python 3.12+
 - A New Relic account (EU region) with API access
-- An Gemini free API key
+- A Gemini free API key
 - A Microsoft Azure AD app registration for the bot
 - Microsoft Teams admin access to install the app
 
