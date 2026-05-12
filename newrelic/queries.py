@@ -1,3 +1,29 @@
+ENTITY_BY_GUID_QUERY = """
+query GetEntityByGuid($guid: EntityGuid!) {
+  actor {
+    entity(guid: $guid) {
+      guid
+      name
+      entityType
+      alertSeverity
+      permalink
+      tags {
+        key
+        values
+      }
+    }
+  }
+}
+"""
+
+INCIDENT_ENTITY_GUID_NRQL = (
+    "SELECT entityGuid, entityName, conditionName, policyName, priority, state "
+    "FROM NrAiIncident "
+    "WHERE entityName LIKE '%{entity_name}%' "
+    "SINCE '{start}' UNTIL '{end}' "
+    "LIMIT 10"
+)
+
 NERDGRAPH_NRQL_QUERY = """
 query RunNRQL($accountId: Int!, $nrql: Nrql!) {
   actor {
@@ -111,6 +137,34 @@ SL_COMPLIANCE_NRQL = (
     "FROM ServiceLevelSnapshot "
     "WHERE entity.guid = '{guid}' "
     "SINCE 1 day ago"
+)
+
+# Service Level triage — quick signal queries (last 30 min, single-row results)
+SL_TRIAGE_JS_ERRORS_NRQL = (
+    "SELECT count(*) AS js_error_count, "
+    "latest(errorClass) AS top_error_class, "
+    "latest(errorMessage) AS top_error_message "
+    "FROM JavaScriptError "
+    "WHERE appName = '{app_name}' "
+    "SINCE 30 minutes ago"
+)
+
+SL_TRIAGE_APM_ERRORS_NRQL = (
+    "SELECT count(*) AS error_count, "
+    "percentage(count(*), WHERE error IS true) AS error_rate, "
+    "latest(error.message) AS top_error_message "
+    "FROM Transaction "
+    "WHERE appName = '{app_name}' "
+    "SINCE 30 minutes ago"
+)
+
+SL_TRIAGE_RECENT_INCIDENTS_NRQL = (
+    "SELECT count(*) AS incident_count, "
+    "latest(conditionName) AS latest_condition "
+    "FROM NrAiIncident "
+    "WHERE entityName LIKE '%{entity_name}%' "
+    "AND state = 'ACTIVATED' "
+    "SINCE 1 hour ago"
 )
 
 # ── Synthetic investigation queries ────────────────────────

@@ -25,6 +25,38 @@ def test_extract_service_context_strips_markdown_fences():
     assert result["service_name"] == "api"
 
 
+def test_extract_service_context_strips_trailing_alert_condition():
+    """If the LLM keeps a trailing '(Fast-burn rate)' on service_name,
+    the post-extract cleanup must strip it and back-fill the type hint."""
+    json_response = (
+        '{"service_name": "[Search][Locations] Availability (Fast-burn rate)", '
+        '"severity": "high", "summary": "SLO breach", '
+        '"intent": "investigate", "entity_type_hint": null}'
+    )
+    with _mock_generate(json_response):
+        result = extract_service_context(
+            "Investigate [Search][Locations] Availability (Fast-burn rate) at 2026-04-28 04:33:15 UTC"
+        )
+
+    assert result["service_name"] == "[Search][Locations] Availability"
+    assert result["entity_type_hint"] == "SERVICE_LEVEL"
+
+
+def test_extract_service_context_preserves_brackets_and_existing_hint():
+    """Bracketed names without a trailing parenthetical must be preserved
+    as-is, and an LLM-supplied entity_type_hint must not be clobbered."""
+    json_response = (
+        '{"service_name": "[Foo] [Bar] Service", '
+        '"severity": "medium", "summary": "x", '
+        '"intent": "triage", "entity_type_hint": "APM"}'
+    )
+    with _mock_generate(json_response):
+        result = extract_service_context("triage [Foo] [Bar] Service")
+
+    assert result["service_name"] == "[Foo] [Bar] Service"
+    assert result["entity_type_hint"] == "APM"
+
+
 def test_synthesize_triage_apm():
     with _mock_generate("Investigate immediately. Check error traces."):
         result = synthesize_triage(

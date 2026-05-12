@@ -13,11 +13,12 @@ from ai.prompts import (
     TRIAGE_SYNTHESIS_PROMPT_SERVICE_LEVEL,
     INVESTIGATION_SYNTHESIS_PROMPT,
 )
+from bot.alert_parser import strip_trailing_parenthetical, infer_type_hint
 
 logger = logging.getLogger(__name__)
 
 _client = genai.Client(api_key=GEMINI_API_KEY)
-_MODEL = "gemini-2.5-flash"
+_MODEL = "gemini-2.5-pro"
 
 _MAX_RETRIES = 3
 _DEFAULT_RETRY_DELAY = 30
@@ -141,7 +142,24 @@ def extract_service_context(alert_text: str) -> dict:
         if raw.startswith("json"):
             raw = raw[4:]
     data = json.loads(raw.strip())
-    return _validate_context(data)
+    data = _validate_context(data)
+
+    # Defensive cleanup: even with prompt guidance, the LLM sometimes returns
+    # `service_name = "<entity> (<alert condition>)"`. The parenthetical is the
+    # NR alert condition, not part of the entity name — stripping it prevents
+    # NR entity search from missing the entity. Use the parenthetical to fill
+    # in entity_type_hint when the LLM left it null.
+    cleaned, paren = strip_trailing_parenthetical(data["service_name"])
+    if cleaned and cleaned != data["service_name"]:
+        logger.info(
+            "Stripped trailing parenthetical from service_name: %r → %r (signal=%r)",
+            data["service_name"], cleaned, paren,
+        )
+        data["service_name"] = cleaned
+        if not data.get("entity_type_hint"):
+            data["entity_type_hint"] = infer_type_hint(paren)
+
+    return data
 
 
 def synthesize_triage(service_name: str, severity: str, alert_summary: str, nr_data: dict) -> str:
@@ -170,14 +188,24 @@ def synthesize_triage(service_name: str, severity: str, alert_summary: str, nr_d
         )
     elif entity_type == "SERVICE_LEVEL":
         compliance = nr_data.get("current_compliance")
+        sigs = nr_data.get("quick_signals", {})
         prompt = TRIAGE_SYNTHESIS_PROMPT_SERVICE_LEVEL.format(
             service_name=service_name,
             severity=severity,
             alert_summary=alert_summary,
+            sli_kind=nr_data.get("sli_kind", "unknown"),
             current_compliance=f"{compliance:.2f}" if compliance is not None else "N/A",
             compliance_category=nr_data.get("compliance_category", "Unknown"),
             slo_target=nr_data.get("slo_target", "N/A"),
-            associated_entity=nr_data.get("associated_entity", "N/A"),
+            associated_entity=nr_data.get("associated_entity", "N/A") or "N/A",
+            active_incident_count=sigs.get("active_incident_count", "N/A"),
+            latest_condition=sigs.get("latest_condition", "N/A"),
+            js_error_count=sigs.get("js_error_count", "N/A"),
+            top_js_error_class=sigs.get("top_js_error_class", "N/A"),
+            top_js_error_message=sigs.get("top_js_error_message", "N/A"),
+            apm_error_count=sigs.get("apm_error_count", "N/A"),
+            apm_error_rate_pct=f"{sigs['apm_error_rate_pct']:.1f}" if isinstance(sigs.get("apm_error_rate_pct"), (int, float)) else "N/A",
+            top_apm_error_message=sigs.get("top_apm_error_message", "N/A"),
         )
     else:
         raise ValueError(f"Unknown entity_type: {entity_type}")

@@ -12,7 +12,7 @@ A Microsoft Teams bot that reads New Relic alert cards posted in channel threads
 GEMINI_API_KEY=test NR_API_KEY=test NR_ACCOUNT_ID=test .venv/bin/pytest tests/ -v
 ```
 
-All 30 tests should pass. Tests use `unittest.mock.patch` to mock the LLM and New Relic calls — no real API keys needed.
+All 41 tests should pass. Tests use `unittest.mock.patch` to mock the LLM and New Relic calls — no real API keys needed.
 
 ## Project structure
 
@@ -55,19 +55,22 @@ GEMINI_API_KEY=       # Gemini free API key
 MicrosoftAppId=       # Azure AD bot app registration ID
 MicrosoftAppPassword= # Azure AD bot client secret
 MS_GRAPH_TENANT_ID=   # Azure AD tenant ID (for Graph API thread fetching)
+NR_NERDGRAPH_URL=     # (optional) NerdGraph endpoint; defaults to EU: https://api.eu.newrelic.com/graphql
 ```
 
 ## Key architectural decisions
 
 **Entity type routing** — `newrelic/client.py` maps NerdGraph `entityType` strings to three internal types (`APM`, `SYNTHETIC`, `SERVICE_LEVEL`) via `_ENTITY_TYPE_MAP`. Each type has a dedicated investigation flow (`_investigate_apm`, `_investigate_synthetic`, and the SERVICE_LEVEL path in `get_investigation_data`).
 
-**Progressive fuzzy entity search** — `_find_entity()` tries increasingly loose NRQL-style LIKE patterns before giving up. If a type hint is provided (e.g. `SYNTHETIC`), it tries that type first, then falls back to all types. `_pick_best_entity()` scores candidates by exact match → name contains search term → closest length.
+**Incident-based entity resolution (primary path)** — When a time window is available (i.e. from a parsed alert card), `_find_entity_via_incident()` queries `NrAiIncident` for matching incidents within that window, extracts `entityGuid` from the best-matching row, and fetches the entity directly by GUID via NerdGraph. This gives ground-truth `entityType` without any keyword hinting or fuzzy name matching. Both `get_service_triage_data()` and `get_investigation_data()` try this path first and fall back to `_find_entity()` when no incident is found (e.g. direct message flows or resolved-before-triage cases).
+
+**Progressive fuzzy entity search (fallback)** — `_find_entity()` tries increasingly loose NRQL-style LIKE patterns before giving up. If a type hint is provided (e.g. `SYNTHETIC`), it tries that type first, then falls back to all types. `_pick_best_entity()` scores candidates by exact match → name contains search term → closest length. The type hints from `alert_parser.py` (`_TYPE_HINTS`) only influence this fallback path.
 
 **NRQL sanitization** — All user-originated or externally-sourced values interpolated into NRQL queries must go through `newrelic/sanitize.py`. Never use raw `.format()` with untrusted strings in queries.
 
 **Thread-aware bot** — When @mentioned in a thread reply, the bot detects the thread via `;messageid=` in `conversation.id`, fetches the root alert card via Graph API (`teams_graph.py`), parses it with `alert_parser.py`, and runs triage or investigation automatically. Direct messages use the original Gemini-style extraction flow via the LLM.
 
-**LLM client** — `ai/llm_client.py` is the single integration point for Gemini. All prompts are in `ai/prompts.py`. The `_generate()` function handles retries on 429 (rate limit) and 529 (overload). 
+**LLM client** — `ai/llm_client.py` is the single integration point for Gemini (`gemini-2.5-pro`). All prompts are in `ai/prompts.py`. The `_generate()` function retries up to 3 times on `ServerError` (model unavailable/overloaded) with a 30 s fixed delay, and on `ClientError` 429 (rate limit) using the `retryDelay` from the error body. It raises `RuntimeError` immediately on 403 (invalid key) or 400+`API_KEY_INVALID` (expired key).
 
 **RSC permissions** — The Teams manifest uses `ChannelMessage.Read.Group` (Resource-Specific Consent) instead of the tenant-wide `ChannelMessage.Read.All`. This limits the bot to reading messages only from teams where it is explicitly installed.
 

@@ -1,5 +1,5 @@
 import pytest
-from bot.alert_parser import parse_alert_message
+from bot.alert_parser import parse_alert_message, strip_trailing_parenthetical, infer_type_hint
 
 
 def test_parse_full_alert_card():
@@ -47,3 +47,51 @@ def test_parse_no_timestamps():
 def test_parse_empty():
     assert parse_alert_message("") is None
     assert parse_alert_message(None) is None
+
+
+def test_strip_trailing_parenthetical_present():
+    cleaned, paren = strip_trailing_parenthetical(
+        "[Search][Locations] Availability (Fast-burn rate)"
+    )
+    assert cleaned == "[Search][Locations] Availability"
+    assert paren == "fast-burn rate"
+
+
+def test_strip_trailing_parenthetical_absent():
+    cleaned, paren = strip_trailing_parenthetical("Culture MMI Page is Down")
+    assert cleaned == "Culture MMI Page is Down"
+    assert paren == ""
+
+
+def test_strip_trailing_parenthetical_only_strips_trailing():
+    # Only the LAST parenthetical at the end is stripped; internal parens stay.
+    cleaned, paren = strip_trailing_parenthetical(
+        "Some (internal) Service (Compliance)"
+    )
+    assert cleaned == "Some (internal) Service"
+    assert paren == "compliance"
+
+
+def test_strip_trailing_parenthetical_empty():
+    assert strip_trailing_parenthetical("") == ("", "")
+    assert strip_trailing_parenthetical(None) == (None, "")
+
+
+def test_infer_type_hint_service_level():
+    assert infer_type_hint("fast-burn rate") == "SERVICE_LEVEL"
+    assert infer_type_hint("Slow-burn rate") == "SERVICE_LEVEL"
+    assert infer_type_hint("compliance") == "SERVICE_LEVEL"
+
+
+def test_infer_type_hint_synthetic():
+    assert infer_type_hint("My Page is Down") == "SYNTHETIC"
+
+
+def test_infer_type_hint_apm():
+    assert infer_type_hint("error rate") == "APM"
+
+
+def test_infer_type_hint_none():
+    assert infer_type_hint("") is None
+    assert infer_type_hint(None) is None
+    assert infer_type_hint("just some text") is None
