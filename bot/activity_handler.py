@@ -104,6 +104,7 @@ class TriageActivityHandler(ActivityHandler):
             await self._do_triage(
                 turn_context, entity_name, entity_type_hint,
                 summary=f"Alert fired for {entity_name}",
+                time_start=time_start, time_end=time_end,
             )
         elif time_start and time_end:
             await self._do_investigation(
@@ -174,10 +175,16 @@ class TriageActivityHandler(ActivityHandler):
         self, turn_context: TurnContext,
         service_name: str, entity_type_hint: str | None,
         summary: str, severity: str = "unknown",
+        time_start: str | None = None, time_end: str | None = None,
     ):
         """Run triage for a known entity."""
         try:
-            nr_data = get_service_triage_data(service_name, entity_type_hint=entity_type_hint)
+            nr_data = get_service_triage_data(
+                service_name,
+                entity_type_hint=entity_type_hint,
+                time_start=time_start,
+                time_end=time_end,
+            )
 
             if nr_data is None:
                 await turn_context.send_activity(

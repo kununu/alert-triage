@@ -34,7 +34,7 @@ When a New Relic alert fires into your Teams channel, tag `@AlertTriage` in the 
 
 - Python 3.12+
 - A New Relic account (EU region) with API access
-- An Anthropic enterprise API key
+- A Gemini free API key
 - A Microsoft Azure AD app registration for the bot
 - Microsoft Teams admin access to install the app
 
@@ -59,7 +59,7 @@ cp .env.example .env
 ```env
 NR_API_KEY=           # New Relic user API key
 NR_ACCOUNT_ID=        # New Relic account ID
-ANTHROPIC_API_KEY=    # Anthropic enterprise API key
+GEMINI_API_KEY=       # Gemini free API key
 MicrosoftAppId=       # Azure AD bot app registration ID
 MicrosoftAppPassword= # Azure AD bot client secret
 MS_GRAPH_TENANT_ID=   # Azure AD tenant ID
@@ -104,7 +104,7 @@ newrelic/client.py                  Entity search + data fetching
        └── NRQL (APM, Synthetic, Service Level queries)
        │
        ▼
-ai/llm_client.py                    Anthropic Claude
+ai/llm_client.py                    Gemini
        │
        └── Triage brief / Root cause analysis
        │
@@ -115,7 +115,7 @@ Teams Thread Reply (Adaptive Card)
 ## Tests
 
 ```bash
-ANTHROPIC_API_KEY=test NR_API_KEY=test NR_ACCOUNT_ID=test pytest tests/ -v
+GEMINI_API_KEY=test NR_API_KEY=test NR_ACCOUNT_ID=test pytest tests/ -v
 ```
 
 30 tests across LLM client, alert parser, NRQL sanitization, and activity handler — all mocked, no real API keys required.

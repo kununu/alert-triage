@@ -34,7 +34,7 @@ _TS_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-# Entity type hints embedded in the title
+# Entity type hints embedded in the title or its trailing parenthetical
 _TYPE_HINTS = {
     "is down": "SYNTHETIC",
     "is failing": "SYNTHETIC",
@@ -42,14 +42,56 @@ _TYPE_HINTS = {
     "synthetic": "SYNTHETIC",
     "fast-burn rate": "SERVICE_LEVEL",
     "slow-burn rate": "SERVICE_LEVEL",
+    "burn rate": "SERVICE_LEVEL",
     "compliance": "SERVICE_LEVEL",
     "sl": "SERVICE_LEVEL",
+    "slo": "SERVICE_LEVEL",
     "error rate": "APM",
     "response time": "APM",
     "throughput": "APM",
     "apdex": "APM",
     "apm": "APM",
 }
+
+# Trailing parenthetical at end of a name, e.g. " (Fast-burn rate)"
+_TRAILING_PAREN_PATTERN = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def strip_trailing_parenthetical(name: str) -> tuple[str, str]:
+    """Strip a trailing parenthetical from an alert/entity name.
+
+    NR alert card titles look like "[Foo] Availability (Fast-burn rate)" —
+    the parenthetical describes the alert *condition*, not the entity. The
+    NR entity is named without it, so we strip it before any search.
+
+    Returns (cleaned_name, parenthetical_content_lowercased).
+    The parenthetical content is returned without the surrounding `()` and
+    lowercased so callers can match it against `_TYPE_HINTS`.
+    """
+    if not name:
+        return name, ""
+    match = _TRAILING_PAREN_PATTERN.search(name)
+    if not match:
+        return name.strip(), ""
+    paren = match.group(0).strip()           # e.g. "(Fast-burn rate)"
+    inner = paren[1:-1].strip().lower()      # e.g. "fast-burn rate"
+    cleaned = _TRAILING_PAREN_PATTERN.sub("", name).strip()
+    return cleaned, inner
+
+
+def infer_type_hint(text: str) -> str | None:
+    """Return the first matching entity type hint found in `text`, or None.
+
+    Match is substring, case-insensitive. `text` may be a full title or just
+    the parenthetical content.
+    """
+    if not text:
+        return None
+    lower = text.lower()
+    for phrase, hint_type in _TYPE_HINTS.items():
+        if phrase in lower:
+            return hint_type
+    return None
 
 
 def parse_alert_message(text: str) -> dict | None:
@@ -94,21 +136,15 @@ def parse_alert_message(text: str) -> dict | None:
     # Covers 🟢🔴🟡⚠️ and other unicode symbols
     entity_name = re.sub(r"^[\U0001F000-\U0001FFFF\u2600-\u27BF\u2700-\u27BF\s]+", "", title_line).strip()
 
-    # Remove trailing parenthetical like (Fast-burn rate)
-    burn_match = re.search(r"\s*\([^)]*\)\s*$", entity_name)
-    burn_info = burn_match.group(0).strip() if burn_match else ""
-    entity_name = re.sub(r"\s*\([^)]*\)\s*$", "", entity_name).strip()
+    # Strip trailing parenthetical alert-condition signal, e.g. "(Fast-burn rate)"
+    entity_name, burn_info = strip_trailing_parenthetical(entity_name)
 
     if not entity_name:
         return None
 
-    # --- Infer entity type from title ---
-    entity_type_hint = None
-    full_title_lower = (entity_name + " " + burn_info).lower()
-    for hint_phrase, hint_type in _TYPE_HINTS.items():
-        if hint_phrase in full_title_lower:
-            entity_type_hint = hint_type
-            break
+    # Prefer the parenthetical signal (most specific), then fall back to the
+    # entity name itself for embedded hints like "is down".
+    entity_type_hint = infer_type_hint(burn_info) or infer_type_hint(entity_name)
 
     # --- Build investigation time window ---
     # Use the earliest and latest timestamps, padded by 1 hour each side

@@ -4,17 +4,23 @@ import re
 import requests
 from config.settings import NR_API_KEY, NR_ACCOUNT_ID, NR_NERDGRAPH_URL
 from newrelic.sanitize import nrql_string, nrql_timestamp, nrql_trace_id, entity_search_string
+from bot.alert_parser import strip_trailing_parenthetical
 
 logger = logging.getLogger(__name__)
 from newrelic.queries import (
     NERDGRAPH_NRQL_QUERY,
     ENTITY_SEARCH_QUERY,
+    ENTITY_BY_GUID_QUERY,
+    INCIDENT_ENTITY_GUID_NRQL,
     SLI_DEFINITION_QUERY,
     APM_BURN_RATE_NRQL,
     APM_ERRORS_NRQL,
     SYNTHETIC_STATS_NRQL,
     SYNTHETIC_LOCATIONS_NRQL,
     SL_COMPLIANCE_NRQL,
+    SL_TRIAGE_JS_ERRORS_NRQL,
+    SL_TRIAGE_APM_ERRORS_NRQL,
+    SL_TRIAGE_RECENT_INCIDENTS_NRQL,
     INVESTIGATION_ALERTS_NRQL,
     INVESTIGATION_DEPLOYMENTS_NRQL,
     INVESTIGATION_JS_ERRORS_NRQL,
@@ -139,6 +145,16 @@ def _find_entity(service_name: str, entity_type_hint: str | None = None) -> dict
     # If the user specified the entity type, search that type first
     hint_types = _TYPE_HINT_MAP.get(entity_type_hint) if entity_type_hint else None
     types = hint_types or all_types
+    # Defense-in-depth: callers should already strip trailing alert-condition
+    # parentheticals (e.g. "(Fast-burn rate)") before getting here, but if a
+    # name still has one we strip it — NR entity names never contain it.
+    deparen, _ = strip_trailing_parenthetical(service_name)
+    if deparen and deparen != service_name:
+        logger.info(
+            "_find_entity: stripping trailing parenthetical from %r → %r",
+            service_name, deparen,
+        )
+        service_name = deparen
     stripped = re.sub(r"\[|\]", "", service_name).strip()
 
     # Split into meaningful words and join with wildcards for fuzzy LIKE
@@ -215,6 +231,97 @@ def _pick_best_entity(entities: list[dict], search_name: str) -> dict:
     return min(entities, key=score)
 
 
+# ── Incident-based entity resolution ────────────────────────
+
+def _fetch_entity_by_guid(guid: str) -> dict | None:
+    """Fetch a single entity by its NR GUID via NerdGraph."""
+    try:
+        data = _nerdgraph(ENTITY_BY_GUID_QUERY, {"guid": guid})
+        entity = data.get("actor", {}).get("entity")
+        if not entity:
+            logger.warning("_fetch_entity_by_guid: no entity returned for guid=%s", guid)
+        return entity
+    except Exception as e:
+        logger.warning("_fetch_entity_by_guid failed for guid=%s: %s", guid, e)
+        return None
+
+
+def _pick_best_incident(rows: list[dict], search_name: str) -> dict | None:
+    """Pick the NrAiIncident row whose entityName best matches search_name."""
+    if not rows:
+        return None
+    search_lower = search_name.lower()
+    for row in rows:
+        if (row.get("entityName") or "").lower() == search_lower:
+            return row
+    for row in rows:
+        if search_lower in (row.get("entityName") or "").lower():
+            return row
+    return rows[0]
+
+
+def _find_entity_via_incident(
+    service_name: str, time_start: str, time_end: str,
+) -> dict | None:
+    """Resolve an entity via a matching NrAiIncident record.
+
+    Searches NrAiIncident for incidents touching this entity within the time
+    window, extracts the entityGuid, then fetches the entity directly by GUID
+    — giving ground-truth entityType without fuzzy name matching or keyword
+    hinting.
+
+    Returns an entity dict (same shape as _find_entity) or None.
+    """
+    # Defense-in-depth: NrAiIncident.entityName never carries the trailing
+    # alert-condition parenthetical (that's `conditionName`), so strip it
+    # before building the NRQL LIKE pattern.
+    deparen, _ = strip_trailing_parenthetical(service_name)
+    if deparen and deparen != service_name:
+        logger.info(
+            "_find_entity_via_incident: stripping trailing parenthetical from %r → %r",
+            service_name, deparen,
+        )
+        service_name = deparen
+
+    try:
+        safe_name = nrql_string(service_name)
+        nrql_start = nrql_timestamp(time_start.replace("T", " ").replace("Z", "").split("+")[0])
+        nrql_end = nrql_timestamp(time_end.replace("T", " ").replace("Z", "").split("+")[0])
+    except ValueError as e:
+        logger.warning("_find_entity_via_incident: invalid input: %s", e)
+        return None
+
+    results = _safe_nrql(
+        INCIDENT_ENTITY_GUID_NRQL.format(
+            entity_name=safe_name, start=nrql_start, end=nrql_end,
+        )
+    )
+    if not results:
+        logger.info(
+            "No NrAiIncident found for '%s' in window %s→%s",
+            service_name, nrql_start, nrql_end,
+        )
+        return None
+
+    best = _pick_best_incident(results, service_name)
+    if not best:
+        return None
+
+    guid = best.get("entityGuid")
+    if not guid:
+        logger.info(
+            "NrAiIncident row for '%s' has no entityGuid — falling back to name search",
+            service_name,
+        )
+        return None
+
+    logger.info(
+        "Incident lookup: guid=%s entityName='%s' condition='%s'",
+        guid, best.get("entityName"), best.get("conditionName"),
+    )
+    return _fetch_entity_by_guid(guid)
+
+
 # ── Triage fetchers ─────────────────────────────────────────
 
 def _fetch_apm(name: str, entity: dict) -> dict:
@@ -255,6 +362,10 @@ def _fetch_synthetic(name: str, entity: dict) -> dict:
     }
 
 
+_BROWSER_SLI_KINDS = {"lcp", "inp", "cls", "pageload"}
+_APM_SLI_KINDS = {"availability", "latency", "success", "error"}
+
+
 def _fetch_service_level(name: str, entity: dict) -> dict:
     guid = entity["guid"]
     tags = _tags_to_dict(entity.get("tags", []))
@@ -265,24 +376,73 @@ def _fetch_service_level(name: str, entity: dict) -> dict:
 
     compliance_category = tags.get("nr.sliComplianceCategory", "Unknown")
     slo_target = tags.get("nr.sloTarget")
-    associated_entity = tags.get("nr.associatedEntityName")
+    associated_entity = tags.get("nr.associatedEntityName", "")
+    category = tags.get("category", "")
+    sli_kind = _CATEGORY_KIND_MAP.get(category.lower(), category.lower() or "unknown")
+
+    # Fetch quick diagnostic signals for the associated app (1–2 extra NRQL queries).
+    # This gives the LLM something to reason from rather than just a compliance number.
+    quick_signals: dict = {}
+    if associated_entity:
+        safe_app = nrql_string(associated_entity)
+        safe_entity = nrql_string(name)
+
+        if sli_kind in _BROWSER_SLI_KINDS:
+            js_rows = _safe_nrql(SL_TRIAGE_JS_ERRORS_NRQL.format(app_name=safe_app))
+            js_row = js_rows[0] if js_rows else {}
+            quick_signals["js_error_count"] = js_row.get("js_error_count", 0)
+            quick_signals["top_js_error_class"] = js_row.get("top_error_class") or "N/A"
+            quick_signals["top_js_error_message"] = js_row.get("top_error_message") or "N/A"
+        elif sli_kind in _APM_SLI_KINDS:
+            apm_rows = _safe_nrql(SL_TRIAGE_APM_ERRORS_NRQL.format(app_name=safe_app))
+            apm_row = apm_rows[0] if apm_rows else {}
+            quick_signals["apm_error_count"] = apm_row.get("error_count", 0)
+            quick_signals["apm_error_rate_pct"] = apm_row.get("error_rate", 0)
+            quick_signals["top_apm_error_message"] = apm_row.get("top_error_message") or "N/A"
+
+        inc_rows = _safe_nrql(
+            SL_TRIAGE_RECENT_INCIDENTS_NRQL.format(entity_name=safe_entity)
+        )
+        inc_row = inc_rows[0] if inc_rows else {}
+        quick_signals["active_incident_count"] = inc_row.get("incident_count", 0)
+        quick_signals["latest_condition"] = inc_row.get("latest_condition") or "N/A"
 
     return {
         "entity_type": "SERVICE_LEVEL",
         "service_name": name,
+        "sli_kind": sli_kind,
         "current_compliance": current_compliance,
         "compliance_category": compliance_category,
         "slo_target": slo_target,
         "associated_entity": associated_entity,
+        "quick_signals": quick_signals,
         "nr_link": entity.get("permalink") or (
             f"https://one.eu.newrelic.com/nr1-core?account={NR_ACCOUNT_ID}"
         ),
     }
 
 
-def get_service_triage_data(service_name: str, entity_type_hint: str | None = None) -> dict | None:
-    """Return triage data for the service, or None if not found in New Relic."""
-    entity = _find_entity(service_name, entity_type_hint=entity_type_hint)
+def get_service_triage_data(
+    service_name: str,
+    entity_type_hint: str | None = None,
+    time_start: str | None = None,
+    time_end: str | None = None,
+) -> dict | None:
+    """Return triage data for the service, or None if not found in New Relic.
+
+    When time_start/time_end are provided (e.g. from a parsed alert card),
+    attempts to resolve the entity via NrAiIncident first for ground-truth
+    entityType, falling back to fuzzy name search if no incident is found.
+    """
+    entity = None
+    if time_start and time_end:
+        entity = _find_entity_via_incident(service_name, time_start, time_end)
+        if entity:
+            logger.info("Triage: resolved entity via incident (guid=%s)", entity.get("guid"))
+
+    if entity is None:
+        entity = _find_entity(service_name, entity_type_hint=entity_type_hint)
+
     if not entity:
         return None
 
@@ -497,7 +657,12 @@ def get_investigation_data(service_name: str, time_start: str, time_end: str, en
     Returns a dict with entity info + all query results as formatted text,
     or None if the entity is not found.
     """
-    entity = _find_entity(service_name, entity_type_hint=entity_type_hint)
+    entity = _find_entity_via_incident(service_name, time_start, time_end)
+    if entity:
+        logger.info("Investigation: resolved entity via incident (guid=%s)", entity.get("guid"))
+    else:
+        entity = _find_entity(service_name, entity_type_hint=entity_type_hint)
+
     if not entity:
         return None
 

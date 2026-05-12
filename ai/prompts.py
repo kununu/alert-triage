@@ -20,9 +20,14 @@ Reply with a JSON object only — no markdown, no explanation:
 }}
 
 Important:
-- Copy the service/monitor/SLO name character-for-character from the message. Do not simplify, shorten, or remove brackets or punctuation.
+- Copy the service/monitor/SLO name character-for-character from the message. Do not simplify, shorten, or remove brackets, casing, or internal punctuation.
+- CRITICAL: A trailing parenthetical at the END of the entity name (e.g. "(Fast-burn rate)", "(Slow-burn rate)", "(Compliance)", "(Burn rate)") is the New Relic ALERT CONDITION name — it is NOT part of the entity. Strip it from `service_name` and use its content to set `entity_type_hint`:
+    * "fast-burn rate", "slow-burn rate", "burn rate", "compliance" → SERVICE_LEVEL
+    * "error rate", "response time", "throughput", "apdex" → APM
+  Example: "[Search][Locations] Availability (Fast-burn rate)" → service_name="[Search][Locations] Availability", entity_type_hint="SERVICE_LEVEL".
+  Brackets `[...]` ARE part of the name and must be preserved — only the trailing `(...)` is stripped.
 - CRITICAL: Phrases like "is Down", "is Failing", "is Slow", "is Broken" ARE part of the Synthetic Monitor name when they appear right after the service name. For example in "Culture MMI Page is Down SM", the monitor name is "Culture MMI Page is Down" (not "Culture MMI Page"). Only strip the type hint abbreviation (SM/SL/APM), NOT the status suffix.
-- For entity_type_hint: infer from context clues like "SM" or "synthetic monitor" → SYNTHETIC, "SL" or "service level" → SERVICE_LEVEL, "APM" or "application" → APM. Use null if unclear. Do NOT include the type hint abbreviation (SM, SL, APM) in the service_name — strip it out.
+- For entity_type_hint: infer from context clues — "SM" or "synthetic monitor" → SYNTHETIC, "SL"/"SLO" or "service level" → SERVICE_LEVEL, "APM" or "application" → APM. Use null only if no signal is present. Do NOT include the type hint abbreviation (SM, SL, APM) in `service_name` — strip it out.
 - For "investigate" intent, infer a time window of 1 hour before and 1 hour after the time the user mentions (e.g. "around 5AM" → start 4:00AM, end 6:00AM). Use today's date ({today}) if the user says "today".
 - If no specific time is mentioned but intent is investigate, use the last 3 hours as the window.
 """
@@ -71,18 +76,31 @@ You are an on-call triage assistant. A {severity} alert fired for Service Level 
 
 Alert summary: {alert_summary}
 
-New Relic Service Level data:
-- Current SLI compliance: {current_compliance}%
+Service Level data:
+- SLI kind: {sli_kind}  (lcp=Largest Contentful Paint, inp=Interaction to Next Paint, cls=Layout Shift, availability=uptime, latency=response time, success/error=transaction success rate)
+- Current SLI compliance: {current_compliance}% (target: {slo_target}%)
 - Compliance status: {compliance_category}
-- SLO target: {slo_target}
-- Associated service: {associated_entity}
+- Associated service/app: {associated_entity}
+- Active incidents on this entity (last 1 h): {active_incident_count} (latest condition: {latest_condition})
 
-Write a concise triage brief for the on-call engineer. Include:
-1. Whether the SLO is breached or at risk based on compliance vs target
-2. Immediate action recommendation (investigate / page secondary / escalate / monitor)
-3. One or two specific things to check first (e.g. the associated service, recent deployments)
+Browser signal (last 30 min — N/A if SLI is not browser-based):
+- JS errors: {js_error_count} | top class: {top_js_error_class} | top message: {top_js_error_message}
 
-Keep the response under 150 words. Use plain language.
+APM signal (last 30 min — N/A if SLI is not APM-based):
+- Transaction errors: {apm_error_count} | error rate: {apm_error_rate_pct}% | top error: {top_apm_error_message}
+
+Write a concise triage brief. Use the data above — do NOT just say "investigate"; the engineer is reading this \
+because they don't know what is wrong yet, so give them a starting point.
+
+Structure:
+1. **What is firing and how bad**: Interpret the compliance gap against the SLI kind. Explain in plain terms what \
+users are experiencing (e.g. "LCP: pages are loading the main element slowly", "availability: some requests are failing").
+2. **Likely cause based on signals**: If JS errors or APM errors are present, name the signal and state whether \
+it is likely the cause. If signals are clean, say so — it may be a data-quality or traffic-volume artefact.
+3. **First two concrete checks**: Be specific. Name the associated service, the signal type, and what to look at \
+(e.g. "open JS errors for {associated_entity} — check if errorClass points to a failed API call or a WAF block").
+
+Keep the response under 200 words. Use plain language. No generic platitudes like "monitor the situation".
 """
 
 # ── Investigation prompts ───────────────────────────────────
